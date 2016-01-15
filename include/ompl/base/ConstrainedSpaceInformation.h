@@ -39,9 +39,15 @@
 
 #include "ompl/base/SpaceInformation.h"
 #include "ompl/base/ConstraintInformation.h"
+#include "ompl/base/PlannerTerminationCondition.h"
 
 namespace ompl
 {
+    namespace geometric
+    {
+        class PathGeometric;
+    }
+
     namespace base
     {
         /// @cond IGNORE
@@ -63,8 +69,21 @@ namespace ompl
 
             const ConstraintInformationPtr& getConstraintInformation() const;
 
+            /// \brief Starting at a, interpolate toward b along the constraint manifold.
+            /// Store the resulting states in result.
+            bool constrainedExtend(const State *a, const State *b,
+                                   std::vector<State*>& result) const;
+
+            bool shortcutPath(geometric::PathGeometric *path, const PlannerTerminationCondition &ptc) const;
+
+            bool projectPath(const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath,
+                bool waypointsValid = true) const;
+
         protected:
             ConstraintInformationPtr ci_;
+
+            /** \brief The random number generator used by shortcutPath */
+            mutable RNG rng_;
         };
 
     }

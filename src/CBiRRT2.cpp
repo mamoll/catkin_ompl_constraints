@@ -47,11 +47,11 @@ ompl::geometric::CBiRRT2::CBiRRT2(const base::SpaceInformationPtr &si) : base::P
     maxDistance_ = 0.0;
     connectionPoint_ = std::make_pair<base::State*, base::State*>(NULL, NULL);
 
-    const base::ConstrainedSpaceInformationPtr& csi = boost::dynamic_pointer_cast<base::ConstrainedSpaceInformation>(si);
-    if (!csi)
+    csi_ = dynamic_cast<base::ConstrainedSpaceInformation*>(si.get());
+    if (!csi_)
         OMPL_ERROR("%s: Failed to cast SpaceInformation to ConstrainedSpaceInformation", getName().c_str());
     else
-        ci_ = csi->getConstraintInformation();
+        ci_ = csi_->getConstraintInformation();
 
     Planner::declareParam<double>("range", this, &CBiRRT2::setRange, &CBiRRT2::getRange, "0.:1.:10000.");
 }
@@ -147,7 +147,7 @@ ompl::geometric::CBiRRT2::GrowState ompl::geometric::CBiRRT2::growTree(TreeData 
     // connected to the goal tree.  To avoid throwing away lots of work, it is assumed that
     // the motions (distances, costs, etc.) are symmetric.
     ///////////////////////////////////////
-    reach &= constrainedExtend(nmotion->state, dstate, extension);
+    reach &= csi_->constrainedExtend(nmotion->state, dstate, extension);
 
     if (extension.size() > 0)
     {
@@ -168,70 +168,6 @@ ompl::geometric::CBiRRT2::GrowState ompl::geometric::CBiRRT2::growTree(TreeData 
     }
 
     return TRAPPED;
-}
-
-bool ompl::geometric::CBiRRT2::constrainedExtend(const base::State* a, const base::State* b,
-                                                 std::vector<base::State*>& result) const
-{
-    // A semi-faithful implementation from the paper
-    // Instead of using vector operations, this implementation
-    // will accomplish a similar extension using interpolation in
-    // the state space
-
-    // Assuming a and b are both valid and on constraint manifold
-    base::StateSpacePtr ss = si_->getStateSpace();
-    const base::State* previous = a;
-
-    // number of discrete steps between a and b in the state space
-    int n = ss->validSegmentCount(a, b);
-
-    if (n == 0) // don't divide by zero
-        return true;
-
-    double dist = ss->distance(a, b);
-    double delta = dist / n; // This is the step size that we will take during extension
-
-    while (true)
-    {
-        // The distance to travel is less than our step size.  Just declare victory
-        if (dist < (delta + std::numeric_limits<double>::epsilon()))
-        {
-            result.push_back(si_->cloneState(b));
-            return true;
-        }
-
-        // Compute the parametrization for interpolation
-        double t = delta / dist;
-
-        base::State* scratchState = ss->allocState();
-        ss->interpolate(previous, b, t, scratchState);
-
-        // Project new state onto constraint manifold.  Make sure the new state is valid
-        // and that it has not deviated too far from where we started
-        if (!ci_->project(scratchState) ||
-            !si_->isValid(scratchState) ||
-            ss->distance(previous, scratchState) > 2.0*delta)
-        {
-            ss->freeState(scratchState);
-            break;
-        }
-
-        // Check for divergence.  Divergence is declared if we are no closer to b
-        // than before projection
-        double newDist = ss->distance(scratchState, b);
-        if (newDist >= dist)
-        {
-            // Since we already collision checked this state, we might as well keep it
-            result.push_back(scratchState);
-            break;
-        }
-        dist = newDist;
-
-        // No divergence; getting closer.  Store the new state
-        result.push_back(scratchState);
-        previous = scratchState;
-    }
-    return false;
 }
 
 ompl::base::PlannerStatus ompl::geometric::CBiRRT2::solve(const base::PlannerTerminationCondition &ptc)
@@ -394,7 +330,7 @@ ompl::base::PlannerStatus ompl::geometric::CBiRRT2::solve(const base::PlannerTer
             for (unsigned int i = 0 ; i < mpath2.size() ; ++i)
                 path->append(mpath2[i]->state);
 
-            shortcutPath(path, ptc);
+            csi_->shortcutPath(path, ptc);
             pdef_->addSolutionPath(base::PathPtr(path), false, 0.0);
             solved = true;
             break;
@@ -408,67 +344,6 @@ ompl::base::PlannerStatus ompl::geometric::CBiRRT2::solve(const base::PlannerTer
     OMPL_INFORM("%s: Created %u states (%u start + %u goal)", getName().c_str(), tStart_->size() + tGoal_->size(), tStart_->size(), tGoal_->size());
 
     return solved ? base::PlannerStatus::EXACT_SOLUTION : base::PlannerStatus::TIMEOUT;
-}
-
-bool ompl::geometric::CBiRRT2::shortcutPath(PathGeometric *path, const base::PlannerTerminationCondition &ptc)
-{
-    std::vector<base::State*>& states = path->getStates();
-
-    unsigned int count = 0;
-    unsigned int maxCount = 10;
-
-    while(!ptc && count < maxCount && states.size() > 3)
-    {
-        int i = rng_.uniformInt(0, states.size()-2);
-        int j;
-        do
-        {
-            j = rng_.uniformInt(0, states.size()-1);
-        } while (abs(i-j) < 2); // make sure the difference between i and j is at least two
-
-        if (i > j)
-            std::swap(i, j);
-
-        base::State* a = states[i];
-        base::State* b = states[j];
-        std::vector<base::State*> shortcut;
-
-        bool foundShortcut = false;
-        if (constrainedExtend(a, b, shortcut) && shortcut.size() > 1)
-        {
-            // see if shortcut is actually shorter
-            double shortcutDist = 0.0;
-            for(size_t k = 1; k < shortcut.size(); ++k)
-                shortcutDist += si_->distance(shortcut[k-1], shortcut[k]);
-
-            double pathDist = 0.0;
-            for(int k = i+1; k < j; ++k)
-                pathDist += si_->distance(states[k-1], states[k]);
-
-            if (shortcutDist < pathDist)
-            {
-                // Delete states between [i+1, j]
-                for(int k = i+1; k < j+1; ++k)
-                    si_->freeState(states[k]);
-                states.erase(states.begin() + i+1, states.begin() + j+1);
-
-                // Inserting new shortcut
-                states.insert(states.begin() + i+1, shortcut.begin(), shortcut.end());
-                foundShortcut = true;
-            }
-        }
-
-        if (!foundShortcut)
-        {
-            for(size_t k = 0; k < shortcut.size(); ++k)
-                si_->freeState(shortcut[k]);
-            count++;
-        }
-        else
-            count = 0;
-    }
-
-    return true;
 }
 
 void ompl::geometric::CBiRRT2::getPlannerData(base::PlannerData &data) const

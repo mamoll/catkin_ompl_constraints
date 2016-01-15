@@ -156,13 +156,6 @@ namespace ompl
             /** \brief Grow a tree from nearMotion towards randMotion */
             GrowState growTree(TreeData &tree, TreeGrowingInfo &tgi, const Motion *randMotion, const Motion *nearMotion);
 
-            /// \brief Starting at a, interpolate toward b along the constraint manifold.
-            /// Store the resulting states in result.
-            bool constrainedExtend(const base::State* a, const base::State* b,
-                                   std::vector<base::State*>& result) const;
-
-            bool shortcutPath(PathGeometric *path, const base::PlannerTerminationCondition &ptc);
-
             /** \brief State sampler */
             base::StateSamplerPtr                          sampler_;
 
@@ -181,6 +174,8 @@ namespace ompl
             /** \brief The pair of states in each tree connected during planning.  Used for PlannerData computation */
             std::pair<base::State*, base::State*>          connectionPoint_;
 
+            /// \brief A pointer to the constraint space information
+            base::ConstrainedSpaceInformation*             csi_;
             /// \brief A pointer to the constraint information object that this planner uses
             base::ConstraintInformationPtr                 ci_;
         };
