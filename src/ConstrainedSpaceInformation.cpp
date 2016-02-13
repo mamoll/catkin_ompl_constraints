@@ -185,14 +185,22 @@ bool ompl::base::ConstrainedSpaceInformation::projectPath(
 	bool result = true;
 	std::vector<State*> projectedWaypoints;
 
+    if (waypointsValid)
+        for (unsigned int i = 0; i < inpath.getStateCount(); ++i)
+            assert(isValid(inpath.getState(i)));
+
 	if (!waypointsValid)
 	{
+        OMPL_WARN("Projecting a path with %d waypoints onto constraint manifold", numStates);
 		base::State* scratchState = allocState();
 		for (unsigned int i = 0; i < numStates; ++i)
 		{
+            bool p, v;
 			copyState(scratchState, inpath.getState(i));
-			if (!ci_->project(scratchState) || !isValid(scratchState))
+			if (!(p=ci_->project(scratchState)) || !(v=isValid(scratchState)))
 			{
+                OMPL_WARN("Projection of waypoint %d failed! projection=%d, validity=%d",
+                    i, p, v);
 				freeState(scratchState);
 				for (unsigned int j = 0; j < projectedWaypoints.size(); ++j)
 					freeState(projectedWaypoints[j]);
@@ -207,23 +215,31 @@ bool ompl::base::ConstrainedSpaceInformation::projectPath(
 		? const_cast<geometric::PathGeometric&>(inpath).getStates()
 		: projectedWaypoints;
 	unsigned int numSegments = numStates - 1;
+    OMPL_WARN("Projecting a path with %d waypoints onto constraint manifold", numStates);
 	for (unsigned int i = 0; i < numSegments; ++i)
 	{
 		outpath.append(cloneState(instates[i]));
 		if (!constrainedExtend(instates[i], instates[i + 1], outpath.getStates()))
 		{
+            OMPL_WARN("Projection of segment %d failed!", i);
 			result = false;
 			break;
 		}
 	}
 	if (result)
+    {
 		outpath.append(cloneState(instates[numSegments]));
+        OMPL_WARN("Path projection was successful!");
+
+        for (unsigned int i = 0; i < outpath.getStateCount(); ++i)
+            assert(isValid(outpath.getState(i)));
+    }
 	else
 	{
-		for (unsigned int i = 0; i < projectedWaypoints.size(); ++i)
-			freeState(projectedWaypoints[i]);
-		for (unsigned int i = 0; i < outpath.getStateCount(); ++i)
-			freeState(outpath.getState(i));
+		//for (unsigned int i = 0; i < projectedWaypoints.size(); ++i)
+		//	freeState(projectedWaypoints[i]);
+		// for (unsigned int i = 0; i < outpath.getStateCount(); ++i)
+		// 	freeState(outpath.getState(i));
 	}
 
 	return result;
