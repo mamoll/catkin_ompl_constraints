@@ -244,3 +244,70 @@ bool ompl::base::ConstrainedSpaceInformation::projectPath(
 
 	return result;
 }
+
+bool ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath(
+    const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath) const
+{
+    boost::container::slist<State*> outlist;
+    unsigned int numStates = inpath.getStateCount();
+
+    assert(isValid(inpath.getState(0)) && isValid(inpath.getState(numStates - 1)));
+    if (!isValid(inpath.getState(0)) || !isValid(inpath.getState(numStates - 1)))
+        OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: first and last states are NOT valid. Proceeding anyway...");
+
+    outlist.push_front(cloneState(inpath.getState(0)));
+    boost::container::slist<State*>::iterator pos = outlist.begin(), newPos;
+    unsigned int waypoints = 1;
+    for (unsigned int i = 1; i < numStates; ++i)
+    {
+        if (isValid(inpath.getState(i)))
+        {
+            newPos = outlist.insert_after(pos, cloneState(inpath.getState(i)));
+            waypoints++;
+            OMPL_WARN("**** %d waypoints ****", waypoints);
+            if (!subdivideAndProject(outlist, pos))
+            {
+                OMPL_WARN("**** projection failed ****");
+                for (pos = outlist.begin(); pos != outlist.end(); pos++)
+                    freeState(*pos);
+                return false;
+            }
+            OMPL_WARN("**** %d points in path ****", outlist.size());
+            pos = newPos;
+        }
+    }
+
+    OMPL_WARN("**** projection succeeded, orig. path: %d states, projected path: %d states ****",
+        numStates, outlist.size());
+
+    for (pos = outlist.begin(); pos != outlist.end(); pos++)
+        outpath.append(*pos);
+
+    return true;
+}
+
+bool ompl::base::ConstrainedSpaceInformation::subdivideAndProject(boost::container::slist<State*> &outpath, const boost::container::slist<State*>::iterator &pos) const
+{
+    base::StateSpacePtr ss = getStateSpace();
+    boost::container::slist<State*>::iterator nextPos = pos;
+    nextPos++;
+    base::State *from = *pos, *to = *nextPos;
+    if (distance(from, to) > .5) //ss->validSegmentCount(from, to) > 1)
+    {
+        //OMPL_WARN("**** distance = %g", distance(from, to));
+        base::State* scratchState = allocState();
+        ss->interpolate(from, to, 0.5, scratchState);
+        bool p, v;
+        double d, d2;
+        if (!(p=ci_->project(scratchState)) ||
+            !(v=isValid(scratchState)) ||
+            (d=distance(from, scratchState)) > (d2=2.0*distance(from, to)))
+        {
+            OMPL_WARN("**** projection failed   p=%d, v=%d, d=%g, d2=%g", p,v,d,d2);
+            freeState(scratchState);
+            return false;
+        }
+        const boost::container::slist<State*>::iterator scratchPos(outpath.insert_after(pos, scratchState));
+        return subdivideAndProject(outpath, pos) && subdivideAndProject(outpath, scratchPos);
+    }
+}

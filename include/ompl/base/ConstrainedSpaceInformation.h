@@ -40,6 +40,7 @@
 #include "ompl/base/SpaceInformation.h"
 #include "ompl/base/ConstraintInformation.h"
 #include "ompl/base/PlannerTerminationCondition.h"
+#include <boost/container/slist.hpp>
 
 namespace ompl
 {
@@ -79,7 +80,11 @@ namespace ompl
             bool projectPath(const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath,
                 bool waypointsValid = true) const;
 
+            bool subdivideAndProjectPath(const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath) const;
+
         protected:
+            bool subdivideAndProject(boost::container::slist<base::State*> &outpath, const boost::container::slist<base::State*>::iterator &pos) const;
+
             ConstraintInformationPtr ci_;
 
             /** \brief The random number generator used by shortcutPath */
