@@ -40,7 +40,6 @@
 #include "ompl/base/SpaceInformation.h"
 #include "ompl/base/ConstraintInformation.h"
 #include "ompl/base/PlannerTerminationCondition.h"
-#include <boost/container/slist.hpp>
 
 namespace ompl
 {
@@ -77,13 +76,23 @@ namespace ompl
 
             bool shortcutPath(geometric::PathGeometric *path, const PlannerTerminationCondition &ptc) const;
 
+            // old, incremental method for projecting path (replaced by subdivision-based method)
             bool projectPath(const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath,
                 bool waypointsValid = true) const;
 
-            bool subdivideAndProjectPath(const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath) const;
+            /// \brief Recursively project a path onto a constraint manifold
+            /// by first projecting the midpoint and recursing on the path
+            /// between start and midpoint and the path between midpoint and
+            /// end. If projection failed, outpath will be the same as inpath
+            /// and the method returns false.
+            bool subdivideAndProjectPath(const geometric::PathGeometric &inpath,
+                geometric::PathGeometric &outpath) const;
 
         protected:
-            bool subdivideAndProject(boost::container::slist<base::State*> &outpath, const boost::container::slist<base::State*>::iterator &pos) const;
+            /// Recursively construct path between last state of outpath and
+            /// waypoint and append resulting path to outpath.
+            bool subdivideAndProject(geometric::PathGeometric &outpath,
+                const base::State* waypoint) const;
 
             ConstraintInformationPtr ci_;
 

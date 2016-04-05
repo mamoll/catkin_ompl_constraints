@@ -34,6 +34,7 @@
 
 /* Author: Ryan Luna */
 
+#include <algorithm> // for std::swap
 #include "ompl/base/ConstrainedSpaceInformation.h"
 #include "ompl/geometric/PathGeometric.h"
 
@@ -248,66 +249,171 @@ bool ompl::base::ConstrainedSpaceInformation::projectPath(
 bool ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath(
     const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath) const
 {
-    boost::container::slist<State*> outlist;
-    unsigned int numStates = inpath.getStateCount();
+    // remove any states in the outpath if necessary
+    std::vector<State*> &outstates(outpath.getStates());
+    for (unsigned int i = 0; i < outstates.size(); ++i)
+        freeState(outstates[i]);
+    outstates.clear();
 
-    assert(isValid(inpath.getState(0)) && isValid(inpath.getState(numStates - 1)));
-    if (!isValid(inpath.getState(0)) || !isValid(inpath.getState(numStates - 1)))
-        OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: first and last states are NOT valid. Proceeding anyway...");
-
-    outlist.push_front(cloneState(inpath.getState(0)));
-    boost::container::slist<State*>::iterator pos = outlist.begin(), newPos;
-    unsigned int waypoints = 1;
-    for (unsigned int i = 1; i < numStates; ++i)
+    // check if start of path needs to be fixed
+    unsigned int validStart = 0;
+    if (!isValid(inpath.getState(0)))
     {
-        if (isValid(inpath.getState(i)))
+        State* scratchState = cloneState(inpath.getState(0));
+        if (ci_->project(scratchState) && isValid(scratchState))
         {
-            newPos = outlist.insert_after(pos, cloneState(inpath.getState(i)));
-            waypoints++;
-            OMPL_WARN("**** %d waypoints ****", waypoints);
-            if (!subdivideAndProject(outlist, pos))
-            {
-                OMPL_WARN("**** projection failed ****");
-                for (pos = outlist.begin(); pos != outlist.end(); pos++)
-                    freeState(*pos);
-                return false;
-            }
-            OMPL_WARN("**** %d points in path ****", outlist.size());
-            pos = newPos;
+            OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: fixed up start state");
+            outpath.append(inpath.getState(0));
+            outpath.append(scratchState);
+            freeState(scratchState);
+            validStart = 1;
+        }
+        else
+        {
+            OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: failed to fix up start state");
+            freeState(scratchState);
+            outpath = inpath;
+            return false;
+        }
+    }
+    else
+        // start state was valid, so add it to outpath
+        outpath.append(inpath.getState(0));
+
+    // check if end of path needs to be fixed
+    unsigned int numStates = inpath.getStateCount();
+    State* endState = const_cast<State*>(inpath.getState(numStates - 1));
+    if (!isValid(endState))
+    {
+        endState = cloneState(endState);
+        if (ci_->project(endState) && isValid(endState))
+            OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: fixed up end state");
+        else
+        {
+            OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: failed to fix up end state");
+            freeState(endState);
+            outpath = inpath;
+            return false;
         }
     }
 
-    OMPL_WARN("**** projection succeeded, orig. path: %d states, projected path: %d states ****",
-        numStates, outlist.size());
+    bool success = true;
+    for (unsigned int i = 1; i < numStates - 1; ++i)
+        // project path between pairs of valid states; exit loop when projection fails
+        if (isValid(inpath.getState(i)) && !subdivideAndProject(outpath, inpath.getState(i)))
+        {
+            success = false;
+            break;
+        }
+    if (success)
+    {
+        // Last state can be fixed-up state or valid inpath end state.
+        // In both cases we can skip the isValid call.
+        if (!subdivideAndProject(outpath, endState))
+            success = false;
+        else
+            outpath.append(endState);
+    }
 
-    for (pos = outlist.begin(); pos != outlist.end(); pos++)
-        outpath.append(*pos);
+    if (!success)
+    {
+        OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: projection failed");
+        outpath = inpath;
+        if (endState != inpath.getState(numStates - 1))
+            freeState(endState);
+        return false;
+    }
+
+    // check if we can reduce the number of waypoints in the outpath
+    unsigned int outNumStates = outpath.getStateCount();
+    if (outNumStates > 2)
+    {
+        std::vector<State*> &outstates(outpath.getStates()), scratchStates;
+        unsigned int from = validStart, to = from + 2;
+        const MotionValidatorPtr &mv(getMotionValidator());
+        for (unsigned int i = 0; i <= validStart; ++i)
+            scratchStates.push_back(cloneState(outstates[i]));
+        while (true)
+        {
+            // greedy approach: find the largest j s.t. the motion i->j is valid
+            while (mv->checkMotion(outstates[from], outstates[to]) && to < outstates.size()) ++to;
+            // this shouldn't happen: the last state in outpath is guaranteed to be valid
+            if (to == outstates.size() - 1)
+            {
+                OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: this cannot happen! Let's pretend it didn't.");
+                scratchStates.push_back(cloneState(outstates[to]));
+                break;
+            }
+            scratchStates.push_back(cloneState(outstates[to - 1]));
+            if (to == outstates.size())
+               break;
+            from = to - 1;
+            to++;
+        }
+        if (scratchStates.size() < outstates.size())
+            // we were able to shorten the path
+            std::swap(scratchStates, outstates);
+        // free memory
+        for (unsigned int i = 0; i < scratchStates.size(); ++i)
+           freeState(scratchStates[i]);
+    }
+
+    // add last segment (if necessary) between fixed-up end state and inpath endstate.
+    if (endState != inpath.getState(numStates - 1))
+        outpath.append(inpath.getState(numStates - 1));
+
+    OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: orig. path:");
+    OMPL_WARN("\t%d states, projected path: %d states (%d states before shortening)",
+        numStates, outpath.getStateCount(), outNumStates);
 
     return true;
 }
 
-bool ompl::base::ConstrainedSpaceInformation::subdivideAndProject(boost::container::slist<State*> &outpath, const boost::container::slist<State*>::iterator &pos) const
+bool ompl::base::ConstrainedSpaceInformation::subdivideAndProject(geometric::PathGeometric &outpath, const State* waypoint) const
 {
-    base::StateSpacePtr ss = getStateSpace();
-    boost::container::slist<State*>::iterator nextPos = pos;
-    nextPos++;
-    base::State *from = *pos, *to = *nextPos;
-    if (distance(from, to) > .5) //ss->validSegmentCount(from, to) > 1)
+    static const unsigned int MAX_ATTEMPTS = 6;
+    StateSpacePtr ss = getStateSpace();
+
+    const State *from = outpath.getStates().back(), *to = waypoint;
+    if (distance(from, to) > .5) // FIXME: replace with a less ad hoc value
     {
-        //OMPL_WARN("**** distance = %g", distance(from, to));
-        base::State* scratchState = allocState();
-        ss->interpolate(from, to, 0.5, scratchState);
-        bool p, v;
-        double d, d2;
-        if (!(p=ci_->project(scratchState)) ||
-            !(v=isValid(scratchState)) ||
-            (d=distance(from, scratchState)) > (d2=2.0*distance(from, to)))
+        State* scratchState = allocState();
+        bool proj, valid, success = false;
+        double dist_midpt = -1, dist_endpt2 = -1;
+        for (unsigned int i = 0; i < MAX_ATTEMPTS; ++i)
         {
-            OMPL_WARN("**** projection failed   p=%d, v=%d, d=%g, d2=%g", p,v,d,d2);
-            freeState(scratchState);
-            return false;
+            ss->interpolate(from, to, 0.5, scratchState);
+            if ((proj = ci_->project(scratchState)) &&
+                (valid = isValid(scratchState)) &&
+                (dist_midpt = distance(from, scratchState)) <= (dist_endpt2 = 2.0*distance(from, to)))
+            {
+                success = true;
+                break;
+            }
         }
-        const boost::container::slist<State*>::iterator scratchPos(outpath.insert_after(pos, scratchState));
-        return subdivideAndProject(outpath, pos) && subdivideAndProject(outpath, scratchPos);
+        if (!success)
+        {
+            if (!proj)
+                OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProject: projection failed");
+            else if (!valid)
+                OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProject: projected state is not valid");
+            else if (dist_midpt > dist_endpt2)
+                OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProject: projected state moved too far away: %g > %g",
+                    dist_midpt, dist_endpt2);
+        }
+        else if (subdivideAndProject(outpath, scratchState))
+        {
+            outpath.append(scratchState);
+            if (subdivideAndProject(outpath, waypoint))
+                outpath.append(waypoint);
+            else
+                success = false;
+        }
+        else
+            success = false;
+         freeState(scratchState);
+
+         return success;
     }
+    return true;
 }
