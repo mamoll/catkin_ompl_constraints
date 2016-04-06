@@ -326,7 +326,7 @@ bool ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath(
 
     // check if we can reduce the number of waypoints in the outpath
     unsigned int outNumStates = outpath.getStateCount();
-    if (outNumStates > 2)
+    if (outNumStates > 2 + validStart)
     {
         std::vector<State*> &outstates(outpath.getStates()), scratchStates;
         unsigned int from = validStart, to = from + 2;
@@ -336,7 +336,7 @@ bool ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath(
         while (true)
         {
             // greedy approach: find the largest j s.t. the motion i->j is valid
-            while (mv->checkMotion(outstates[from], outstates[to]) && to < outstates.size()) ++to;
+            while (to < outstates.size() && mv->checkMotion(outstates[from], outstates[to])) ++to;
             // this shouldn't happen: the last state in outpath is guaranteed to be valid
             if (to == outstates.size() - 1)
             {
