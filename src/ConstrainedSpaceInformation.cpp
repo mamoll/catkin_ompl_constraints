@@ -247,7 +247,7 @@ bool ompl::base::ConstrainedSpaceInformation::projectPath(
 }
 
 bool ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath(
-    const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath) const
+    const geometric::PathGeometric &inpath, geometric::PathGeometric &outpath, bool shorten) const
 {
     // remove any states in the outpath if necessary
     std::vector<State*> &outstates(outpath.getStates());
@@ -325,57 +325,71 @@ bool ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath(
     }
 
     // check if we can reduce the number of waypoints in the outpath
-    unsigned int outNumStates = outpath.getStateCount();
-    if (outNumStates > 2 + validStart)
+    if (shorten)
     {
-        std::vector<State*> &outstates(outpath.getStates()), scratchStates;
-        unsigned int from = validStart, to = from + 2;
-        const MotionValidatorPtr &mv(getMotionValidator());
-        for (unsigned int i = 0; i <= validStart; ++i)
-            scratchStates.push_back(cloneState(outstates[i]));
-        while (true)
+        unsigned int outNumStates = outpath.getStateCount();
+        if (outNumStates > 2 + validStart)
         {
-            // greedy approach: find the largest j s.t. the motion i->j is valid
-            while (to < outstates.size() && mv->checkMotion(outstates[from], outstates[to])) ++to;
-            // this shouldn't happen: the last state in outpath is guaranteed to be valid
-            if (to == outstates.size() - 1)
+            std::vector<State*> &outstates(outpath.getStates()), scratchStates;
+            unsigned int from = validStart, to = from + 2;
+            const MotionValidatorPtr &mv(getMotionValidator());
+            for (unsigned int i = 0; i <= validStart; ++i)
+                scratchStates.push_back(cloneState(outstates[i]));
+            while (true)
             {
-                OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: this cannot happen! Let's pretend it didn't.");
-                scratchStates.push_back(cloneState(outstates[to]));
-                break;
+                // greedy approach: find the largest j s.t. the motion i->j is valid
+                while (to < outstates.size() && mv->checkMotion(outstates[from], outstates[to])) ++to;
+                // this shouldn't happen: the last state in outpath is guaranteed to be valid
+                if (to == outstates.size() - 1)
+                {
+                    OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: this cannot happen! Let's pretend it didn't.");
+                    scratchStates.push_back(cloneState(outstates[to]));
+                    break;
+                }
+                scratchStates.push_back(cloneState(outstates[to - 1]));
+                if (to == outstates.size())
+                    break;
+                from = to - 1;
+                to++;
             }
-            scratchStates.push_back(cloneState(outstates[to - 1]));
-            if (to == outstates.size())
-               break;
-            from = to - 1;
-            to++;
+            if (scratchStates.size() < outstates.size())
+                // we were able to shorten the path
+                std::swap(scratchStates, outstates);
+            // free memory
+            for (unsigned int i = 0; i < scratchStates.size(); ++i)
+                freeState(scratchStates[i]);
         }
-        if (scratchStates.size() < outstates.size())
-            // we were able to shorten the path
-            std::swap(scratchStates, outstates);
-        // free memory
-        for (unsigned int i = 0; i < scratchStates.size(); ++i)
-           freeState(scratchStates[i]);
     }
 
     // add last segment (if necessary) between fixed-up end state and inpath endstate.
     if (endState != inpath.getState(numStates - 1))
         outpath.append(inpath.getState(numStates - 1));
 
-    OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath: orig. path:");
-    OMPL_WARN("\t%d states, projected path: %d states (%d states before shortening)",
-        numStates, outpath.getStateCount(), outNumStates);
+    OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProjectPath:");
+    OMPL_WARN("\torig. path: %d states, projected path: %d states",
+        numStates, outpath.getStateCount());
 
     return true;
 }
 
-bool ompl::base::ConstrainedSpaceInformation::subdivideAndProject(geometric::PathGeometric &outpath, const State* waypoint) const
+bool ompl::base::ConstrainedSpaceInformation::subdivideAndProject(
+    geometric::PathGeometric &outpath, const State* waypoint, unsigned int waypointLimit) const
 {
-    static const unsigned int MAX_ATTEMPTS = 6;
     StateSpacePtr ss = getStateSpace();
+    if (waypointLimit == 0)
+        // put a limit on how much longer the projected path can be
+        waypointLimit = outpath.getStateCount() + 10 * ss->validSegmentCount(
+            outpath.getStates().back(), waypoint);
+    if (outpath.getStateCount() > waypointLimit)
+    {
+        OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProject: projected path is too long");
+        return false;
+    }
+
+    static const unsigned int MAX_ATTEMPTS = 20;
 
     const State *from = outpath.getStates().back(), *to = waypoint;
-    if (distance(from, to) > .5) // FIXME: replace with a less ad hoc value
+    if (ss->validSegmentCount(from, to) > 1)
     {
         State* scratchState = allocState();
         bool proj, valid, success = false;
@@ -400,11 +414,13 @@ bool ompl::base::ConstrainedSpaceInformation::subdivideAndProject(geometric::Pat
             else if (dist_midpt > dist_endpt2)
                 OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProject: projected state moved too far away: %g > %g",
                     dist_midpt, dist_endpt2);
+            else
+                OMPL_WARN("ompl::base::ConstrainedSpaceInformation::subdivideAndProject: unknown error");
         }
-        else if (subdivideAndProject(outpath, scratchState))
+        else if (subdivideAndProject(outpath, scratchState, waypointLimit - 1))
         {
             outpath.append(scratchState);
-            if (subdivideAndProject(outpath, waypoint))
+            if (subdivideAndProject(outpath, waypoint, waypointLimit))
                 outpath.append(waypoint);
             else
                 success = false;

@@ -86,13 +86,13 @@ namespace ompl
             /// end. If projection failed, outpath will be the same as inpath
             /// and the method returns false.
             bool subdivideAndProjectPath(const geometric::PathGeometric &inpath,
-                geometric::PathGeometric &outpath) const;
+                geometric::PathGeometric &outpath, bool shorten = false) const;
 
         protected:
             /// Recursively construct path between last state of outpath and
             /// waypoint and append resulting path to outpath.
             bool subdivideAndProject(geometric::PathGeometric &outpath,
-                const base::State* waypoint) const;
+                const base::State* waypoint, unsigned int waypointLimit = 0) const;
 
             ConstraintInformationPtr ci_;
 
